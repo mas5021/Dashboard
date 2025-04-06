@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Climate Policy Simulator: Future Crop Yields & CO₂ Emissions</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <style>
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background: #f8f9fa;
+      margin: 2rem;
+      text-align: center;
+    }
+    h1 {
+      color: #2c3e50;
+      margin-bottom: 0.5rem;
+    }
+    p {
+      color: #7f8c8d;
+      margin-bottom: 1rem;
+    }
+    .controls {
+      margin-bottom: 1.5rem;
+    }
+    .controls label {
+      margin-right: 1rem;
+      font-weight: bold;
+    }
+    .chart-container {
+      position: relative;
+      display: inline-block;
+    }
+    svg {
+      background: white;
+      border: 1px solid #ccc;
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    .tooltip {
+      position: absolute;
+      background: rgba(0,0,0,0.9);
+      color: #fff;
+      padding: 0.6rem;
+      border-radius: 4px;
+      pointer-events: none;
+      font-size: 0.9rem;
+      opacity: 0;
+      transition: opacity 0.2s;
+    }
+    .axis-label {
+      font-size: 1rem;
+      fill: #333;
+    }
+    .trendline {
+      stroke: #e74c3c;
+      stroke-width: 2;
+      stroke-dasharray: 4,2;
+    }
+  </style>
+</head>
+<body>
+  <h1>Climate Policy Simulator</h1>
+  <p>Adjust the policy levers below to see how future U.S. crop yields and CO₂ emissions might change.</p>
+  
+  <div class="controls">
+    <label for="fertSlider">Fertilizer Usage (% of baseline): 
+      <input type="range" id="fertSlider" min="50" max="150" value="100" step="1">
+      <span id="fertLabel">100%</span>
+    </label>
+    <label for="co2Slider">CO₂ Emission Reduction Target (%): 
+      <input type="range" id="co2Slider" min="0" max="50" value="0" step="1">
+      <span id="co2Label">0%</span>
+    </label>
+    <label for="irrSlider">Irrigation Level (% of baseline): 
+      <input type="range" id="irrSlider" min="50" max="150" value="100" step="1">
+      <span id="irrLabel">100%</span>
+    </label>
+  </div>
+  
+  <div class="chart-container">
+    <svg id="chart" width="1000" height="600"></svg>
+    <div id="tooltip" class="tooltip"></div>
+  </div>
+  
+  <script>
+    // Set up simulation parameters and baseline values.
+    const baselineYield = 100;  // arbitrary baseline crop yield (units)
+    const baselineCO2 = 100;    // arbitrary baseline CO₂ emissions (units)
+    const startYear = 2025;
+    const endYear = 2035;
+    const years = d3.range(startYear, endYear + 1);
+
+    // Growth assumptions:
+    const yieldGrowthRate = 0.02;      // 2% annual yield increase
+    const emissionDeclineRate = 0.01;  // 1% annual decline in emissions (due to efficiency)
+
+    // Create SVG container.
+    const margin = { top: 60, right: 80, bottom: 80, left: 100 },
+          width = 1000 - margin.left - margin.right,
+          height = 600 - margin.top - margin.bottom;
+    const svg = d3.select("#chart")
+                  .append("g")
+                  .attr("transform", `translate(${margin.left},${margin.top})`);
+
+    const tooltip = d3.select("#tooltip");
+
+    // Scales and axes (initialized later).
+    let xScale = d3.scaleLinear().range([0, width]);
+    let yScale = d3.scaleLinear().range([height, 0]);
+
+    // Create group containers for axes and lines.
+    const xAxisGroup = svg.append("g")
+                          .attr("class", "x-axis")
+                          .attr("transform", `translate(0, ${height})`);
+    const yAxisGroup = svg.append("g")
+                          .attr("class", "y-axis");
+
+    // Axis labels.
+    svg.append("text")
+       .attr("class", "axis-label")
+       .attr("x", width / 2)
+       .attr("y", height + 50)
+       .style("text-anchor", "middle")
+       .text("Year");
+
+    svg.append("text")
+       .attr("class", "axis-label")
+       .attr("transform", "rotate(-90)")
+       .attr("x", -height / 2)
+       .attr("y", -70)
+       .style("text-anchor", "middle")
+       .text("Crop Yield (units)");
+
+    // Create group for lines.
+    const yieldLineGroup = svg.append("g").attr("class", "yield-line-group");
+    const co2LineGroup = svg.append("g").attr("class", "co2-line-group");
+    const pointsGroup = svg.append("g").attr("class", "points-group");
+    const trendGroup = svg.append("g").attr("class", "trend-group");
+
+    // Set up slider interactivity.
+    const fertSlider = document.getElementById("fertSlider");
+    const co2Slider = document.getElementById("co2Slider");
+    const irrSlider = document.getElementById("irrSlider");
+    const fertLabel = document.getElementById("fertLabel");
+    const co2Label = document.getElementById("co2Label");
+    const irrLabel = document.getElementById("irrLabel");
+
+    fertSlider.oninput = () => {
+      fertLabel.innerText = fertSlider.value + "%";
+      updateSimulation();
+    };
+    co2Slider.oninput = () => {
+      co2Label.innerText = co2Slider.value + "%";
+      updateSimulation();
+    };
+    irrSlider.oninput = () => {
+      irrLabel.innerText = irrSlider.value + "%";
+      updateSimulation();
+    };
+
+    // Initial simulation update.
+    updateSimulation();
+
+    function updateSimulation() {
+      // Retrieve slider values and convert to factors.
+      const fertFactor = fertSlider.value / 100.0;
+      const irrFactor = irrSlider.value / 100.0;
+      const reduction = co2Slider.value / 100.0;
+
+      // Compute predictions for each year.
+      const yieldPredictions = years.map(year => {
+        // Crop yield increases with fertilizer and irrigation factors
+        // and grows at 2% per year over baseline.
+        const growthMultiplier = 1 + yieldGrowthRate * (year - startYear);
+        return {
+          year,
+          yield: baselineYield * fertFactor * irrFactor * growthMultiplier
+        };
+      });
+      const co2Predictions = years.map(year => {
+        // CO₂ emissions scale with fertilizer usage and are reduced by the target,
+        // with a 1% annual decline due to efficiency improvements.
+        const efficiencyMultiplier = 1 - emissionDeclineRate * (year - startYear);
+        return {
+          year,
+          co2: baselineCO2 * fertFactor * (1 - reduction) * efficiencyMultiplier
+        };
+      });
+
+      // Merge predictions into a single array.
+      const mergedPredictions = years.map(year => {
+        const yieldObj = yieldPredictions.find(d => d.year === year);
+        const co2Obj = co2Predictions.find(d => d.year === year);
+        return {
+          year,
+          yield: yieldObj ? yieldObj.yield : null,
+          co2: co2Obj ? co2Obj.co2 : null
+        };
+      });
+      console.log("Merged Predictions:", mergedPredictions);
+
+      // Update scales: x-axis will be year, y-axis on left for yield, and right for CO₂.
+      // We'll overlay two line charts in one SVG.
+      // For simplicity, we'll use the x-axis for year.
+      xScale.domain(d3.extent(years));
+      // Use separate y scales for yield and CO₂.
+      // We define a common y-scale range for plotting, but we draw two axes.
+      const yYieldScale = d3.scaleLinear()
+                            .domain([0, d3.max(mergedPredictions, d => d.yield) * 1.1])
+                            .range([height, 0])
+                            .nice();
+      const yCO2Scale = d3.scaleLinear()
+                          .domain([0, d3.max(mergedPredictions, d => d.co2) * 1.1])
+                          .range([height, 0])
+                          .nice();
+
+      // Update x-axis.
+      xAxisGroup.transition().duration(750).call(d3.axisBottom(xScale).ticks(years.length).tickFormat(d3.format("d")));
+      // Update left y-axis (yield).
+      svg.selectAll(".y-axis-left").remove();
+      svg.append("g")
+         .attr("class", "y-axis-left")
+         .call(d3.axisLeft(yYieldScale).tickFormat(d => d.toFixed(1)))
+         .append("text")
+         .attr("transform", "rotate(-90)")
+         .attr("y", -40)
+         .attr("x", -height / 2)
+         .attr("fill", "#2c3e50")
+         .attr("text-anchor", "middle")
+         .text("Crop Yield (units)");
+      // Update right y-axis (CO₂).
+      svg.selectAll(".y-axis-right").remove();
+      svg.append("g")
+         .attr("class", "y-axis-right")
+         .attr("transform", `translate(${width},0)`)
+         .call(d3.axisRight(yCO2Scale).tickFormat(d => d.toFixed(1)))
+         .append("text")
+         .attr("transform", "rotate(-90)")
+         .attr("y", 40)
+         .attr("x", -height / 2)
+         .attr("fill", "#e74c3c")
+         .attr("text-anchor", "middle")
+         .text("CO₂ Emissions (units)");
+
+      // Remove previous lines and points.
+      yieldLineGroup.selectAll("*").remove();
+      co2LineGroup.selectAll("*").remove();
+      pointsGroup.selectAll("*").remove();
+      trendGroup.selectAll("*").remove();
+
+      // Create line generators.
+      const lineGenerator = d3.line()
+                              .x(d => xScale(d.year))
+                              .y(d => yYieldScale(d.yield))
+                              .curve(d3.curveMonotoneX);
+      const lineGeneratorCO2 = d3.line()
+                                 .x(d => xScale(d.year))
+                                 .y(d => yCO2Scale(d.co2))
+                                 .curve(d3.curveMonotoneX);
+
+      // Draw yield line.
+      yieldLineGroup.append("path")
+        .datum(mergedPredictions)
+        .attr("fill", "none")
+        .attr("stroke", "#2ecc71")
+        .attr("stroke-width", 3)
+        .attr("d", lineGenerator);
+      // Draw CO₂ line.
+      co2LineGroup.append("path")
+        .datum(mergedPredictions)
+        .attr("fill", "none")
+        .attr("stroke", "#e74c3c")
+        .attr("stroke-width", 3)
+        .attr("d", lineGeneratorCO2);
+
+      // Draw data points (circles) for both lines.
+      // We'll draw yield points in green and CO₂ points in red.
+      pointsGroup.selectAll(".yield-point")
+        .data(mergedPredictions)
+        .enter()
+        .append("circle")
+        .attr("class", "yield-point")
+        .attr("cx", d => xScale(d.year))
+        .attr("cy", d => yYieldScale(d.yield))
+        .attr("r", 5)
+        .attr("fill", "#2ecc71")
+        .on("mouseover", (event, d) => {
+          tooltip.style("opacity", 1)
+                 .style("left", `${event.pageX + 10}px`)
+                 .style("top", `${event.pageY - 30}px`)
+                 .html(`
+                   <div><strong>Year:</strong> ${d.year}</div>
+                   <div><strong>Yield:</strong> ${d.yield.toFixed(1)} units</div>
+                 `);
+        })
+        .on("mouseout", hideTooltip);
+
+      pointsGroup.selectAll(".co2-point")
+        .data(mergedPredictions)
+        .enter()
+        .append("circle")
+        .attr("class", "co2-point")
+        .attr("cx", d => xScale(d.year))
+        .attr("cy", d => yCO2Scale(d.co2))
+        .attr("r", 5)
+        .attr("fill", "#e74c3c")
+        .on("mouseover", (event, d) => {
+          tooltip.style("opacity", 1)
+                 .style("left", `${event.pageX + 10}px`)
+                 .style("top", `${event.pageY - 30}px`)
+                 .html(`
+                   <div><strong>Year:</strong> ${d.year}</div>
+                   <div><strong>CO₂:</strong> ${d.co2.toFixed(1)} units</div>
+                 `);
+        })
+        .on("mouseout", hideTooltip);
+
+      // Compute overall linear regression for yield vs. CO₂ over the simulated period.
+      // For demonstration, we compute regression using yield predictions vs. CO₂ predictions.
+      const regressionData = mergedPredictions.map(d => ({ x: d.yield, y: d.co2 }));
+      const lr = simpleLinearRegression(regressionData);
+      // Compute two endpoints for the trendline.
+      const yieldExtent = d3.extent(mergedPredictions, d => d.yield);
+      const trendPoints = yieldExtent.map(yVal => ({
+        x: yVal,
+        y: lr.slope * yVal + lr.intercept
+      }));
+      trendGroup.append("line")
+        .attr("class", "trendline")
+        .attr("x1", xScale(mergedPredictions[0].year))  // using year axis is not ideal, so here we show a dummy trendline.
+        .attr("y1", yCO2Scale(trendPoints[0].y))
+        .attr("x2", xScale(mergedPredictions[mergedPredictions.length-1].year))
+        .attr("y2", yCO2Scale(trendPoints[1].y))
+        .attr("stroke", "#34495e")
+        .attr("stroke-width", 2)
+        .attr("stroke-dasharray", "4,2");
+    }
+
+    function handleZoom(event) {
+      const newX = event.transform.rescaleX(xScale);
+      const newYLeft = event.transform.rescaleY(d3.scaleLinear().domain(d3.extent(mergedData, d => d.yield)).range([height, 0]));
+      const newYRight = event.transform.rescaleY(d3.scaleLinear().domain(d3.extent(mergedData, d => d.co2)).range([height, 0]));
+
+      // Update lines and points based on zoom transform.
+      svg.selectAll(".yield-point")
+        .attr("cx", d => newX(d.year))
+        .attr("cy", d => newYLeft(d.yield));
+      svg.selectAll(".co2-point")
+        .attr("cx", d => newX(d.year))
+        .attr("cy", d => newYRight(d.co2));
+
+      svg.select(".x-axis").call(d3.axisBottom(newX).ticks(years.length).tickFormat(d3.format("d")));
+      svg.select(".y-axis-left").call(d3.axisLeft(newYLeft));
+      svg.select(".y-axis-right").call(d3.axisRight(newYRight));
+    }
+
+    function resetZoom() {
+      d3.select("#chart").transition()
+        .duration(300)
+        .call(zoomBehavior.transform, d3.zoomIdentity);
+    }
+
+    function hideTooltip() {
+      d3.select("#tooltip").style("opacity", 0);
+    }
+
+    // Simple linear regression function.
+    function simpleLinearRegression(data) {
+      const n = data.length;
+      let sumX = 0, sumY = 0, sumXY = 0, sumXX = 0;
+      data.forEach(d => {
+        sumX += d.x;
+        sumY += d.y;
+        sumXY += d.x * d.y;
+        sumXX += d.x * d.x;
+      });
+      const slope = (n * sumXY - sumX * sumY) / (n * sumXX - sumX * sumX);
+      const intercept = (sumY - slope * sumX) / n;
+      return { slope, intercept };
+    }
+  </script>
+</body>
+</html>
